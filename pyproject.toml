@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "opensourcehedgeterminal"
+version = "1.0.0"
+description = "Free, open-source quant analyst terminal — no $24k/year subscriptions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "yfinance>=0.2.36",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "lxml>=4.9.0",
+    "scipy>=1.11.0",
+]
+
+[project.scripts]
+hedge-terminal = "main:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
