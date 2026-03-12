@@ -1023,3 +1023,369 @@ class TestChart:
 
         assert "SPY" in result
         assert "QQQ" in result
+
+
+# ---------------------------------------------------------------------------
+# heatmap tests
+# ---------------------------------------------------------------------------
+
+class TestVolumeHeatmap:
+    def _make_ohlcv_df(self, n: int = 20) -> pd.DataFrame:
+        """Create a realistic OHLCV DataFrame."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        prices = 100.0 + np.cumsum(rng.normal(0, 1, n))
+        idx = pd.date_range("2024-01-02", periods=n, freq="B")
+        return pd.DataFrame(
+            {
+                "Open": prices * 0.998,
+                "High": prices * 1.005,
+                "Low": prices * 0.995,
+                "Close": prices,
+                "Volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+            },
+            index=idx,
+        )
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_get_volume_heatmap_returns_data(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap, VolumeHeatmapData
+
+        mock_hist.return_value = self._make_ohlcv_df()
+        hm = get_volume_heatmap("SPY", period="3mo")
+
+        assert isinstance(hm, VolumeHeatmapData)
+        assert hm.ticker == "SPY"
+        assert hm.matrix.size > 0
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_matrix_shape_matches_bins_and_bars(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        df = self._make_ohlcv_df(15)
+        mock_hist.return_value = df
+        hm = get_volume_heatmap("SPY", price_bins=20)
+
+        assert hm.matrix.shape == (20, 15)
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_poc_within_price_range(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = self._make_ohlcv_df()
+        hm = get_volume_heatmap("SPY")
+
+        assert hm.price_edges[0] <= hm.point_of_control <= hm.price_edges[-1]
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_val_leq_poc_leq_vah(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = self._make_ohlcv_df(30)
+        hm = get_volume_heatmap("SPY")
+
+        assert hm.value_area_low <= hm.point_of_control
+        assert hm.point_of_control <= hm.value_area_high
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_total_volume_matches_sum(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        df = self._make_ohlcv_df()
+        mock_hist.return_value = df
+        hm = get_volume_heatmap("SPY")
+
+        expected = float(df["Volume"].sum())
+        # matrix total should be very close (floating-point arithmetic)
+        assert abs(hm.matrix.sum() - expected) / max(expected, 1.0) < 0.01
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_render_returns_string_with_ticker(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = self._make_ohlcv_df(20)
+        hm = get_volume_heatmap("AAPL")
+        rendered = hm.render(width=30, height=10)
+
+        assert isinstance(rendered, str)
+        assert "AAPL" in rendered
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_render_contains_poc_label(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = self._make_ohlcv_df(20)
+        hm = get_volume_heatmap("SPY")
+        rendered = hm.render(width=30, height=15)
+
+        assert "POC" in rendered
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_render_empty_returns_no_data(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = pd.DataFrame()
+        hm = get_volume_heatmap("SPY")
+
+        assert hm.render() == "(no data)"
+
+    @patch("hedge_terminal.modules.heatmap.get_price_history")
+    def test_summary_has_required_keys(self, mock_hist):
+        from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+        mock_hist.return_value = self._make_ohlcv_df()
+        hm = get_volume_heatmap("SPY")
+        s = hm.summary()
+
+        for key in ("Ticker", "Period", "Point of Control",
+                    "Value Area High", "Value Area Low", "Total Volume"):
+            assert key in s, f"Missing key: {key}"
+
+    def test_distribute_volume_preserves_total(self):
+        from hedge_terminal.modules.heatmap import _distribute_volume
+        import numpy as np
+
+        edges = np.linspace(90, 110, 21)  # 20 bins
+        vol = _distribute_volume(
+            open_=98.0, high=105.0, low=95.0, close=102.0,
+            volume=1_000_000.0, price_edges=edges,
+        )
+
+        assert abs(vol.sum() - 1_000_000.0) < 1.0  # rounding tolerance
+
+    def test_distribute_volume_zero_range(self):
+        from hedge_terminal.modules.heatmap import _distribute_volume
+        import numpy as np
+
+        edges = np.linspace(90, 110, 11)
+        vol = _distribute_volume(100.0, 100.0, 100.0, 100.0, 500_000.0, edges)
+        # zero range bar → all zeros (no overlap distribution possible)
+        assert vol.sum() == 0.0
+
+    def test_compute_volume_profile_poc_is_max_bin(self):
+        from hedge_terminal.modules.heatmap import _compute_volume_profile
+        import numpy as np
+
+        edges = np.linspace(100, 110, 6)  # 5 bins
+        profile = np.array([100.0, 200.0, 500.0, 150.0, 50.0])  # peak at index 2
+        poc, vah, val = _compute_volume_profile(edges, profile)
+
+        # POC should be center of bin 2
+        expected_poc = (edges[2] + edges[3]) / 2
+        assert abs(poc - expected_poc) < 0.01
+
+    def test_compute_volume_profile_zero_returns_midpoint(self):
+        from hedge_terminal.modules.heatmap import _compute_volume_profile
+        import numpy as np
+
+        edges = np.linspace(100, 110, 6)
+        profile = np.zeros(5)
+        poc, vah, val = _compute_volume_profile(edges, profile)
+
+        # Should return midpoint without crashing
+        assert 100.0 <= poc <= 110.0
+
+
+# ---------------------------------------------------------------------------
+# footprint tests
+# ---------------------------------------------------------------------------
+
+class TestFootprint:
+    def _make_ohlcv_df(self, n: int = 10) -> pd.DataFrame:
+        idx = pd.date_range("2024-01-02", periods=n, freq="B")
+        # Alternating bullish/bearish bars
+        opens  = [100.0 + i for i in range(n)]
+        closes = [o + (1.0 if i % 2 == 0 else -1.0) for i, o in enumerate(opens)]
+        highs  = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+        lows   = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+        return pd.DataFrame(
+            {
+                "Open": opens,
+                "High": highs,
+                "Low": lows,
+                "Close": closes,
+                "Volume": [1_000_000.0] * n,
+            },
+            index=idx,
+        )
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_get_footprint_returns_footprint_data(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint, FootprintData
+
+        mock_hist.return_value = self._make_ohlcv_df()
+        fp = get_footprint("AAPL")
+
+        assert isinstance(fp, FootprintData)
+        assert fp.ticker == "AAPL"
+        assert len(fp.bars) == 10
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_bid_plus_ask_equals_volume(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df()
+        fp = get_footprint("AAPL")
+
+        for bar in fp.bars:
+            total = bar.bid_volume + bar.ask_volume
+            assert abs(total - bar.volume) < 0.01, (
+                f"bid+ask ({total}) != volume ({bar.volume})"
+            )
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_bullish_bar_has_more_ask_than_bid(self, mock_hist):
+        """A strongly bullish bar should have ask_vol > bid_vol."""
+        from hedge_terminal.modules.footprint import get_footprint
+
+        # Marubozu-like bullish bar: body = full range
+        idx = pd.date_range("2024-01-02", periods=1, freq="B")
+        df = pd.DataFrame(
+            {"Open": [100.0], "High": [110.0], "Low": [100.0],
+             "Close": [110.0], "Volume": [1_000_000.0]},
+            index=idx,
+        )
+        mock_hist.return_value = df
+        fp = get_footprint("SPY")
+
+        bar = fp.bars[0]
+        assert bar.ask_volume > bar.bid_volume
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_bearish_bar_has_more_bid_than_ask(self, mock_hist):
+        """A strongly bearish bar should have bid_vol > ask_vol."""
+        from hedge_terminal.modules.footprint import get_footprint
+
+        idx = pd.date_range("2024-01-02", periods=1, freq="B")
+        df = pd.DataFrame(
+            {"Open": [110.0], "High": [110.0], "Low": [100.0],
+             "Close": [100.0], "Volume": [1_000_000.0]},
+            index=idx,
+        )
+        mock_hist.return_value = df
+        fp = get_footprint("SPY")
+
+        bar = fp.bars[0]
+        assert bar.bid_volume > bar.ask_volume
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_doji_bar_is_near_fifty_fifty(self, mock_hist):
+        """A doji (Close == Open) should give a ~50/50 split."""
+        from hedge_terminal.modules.footprint import get_footprint
+
+        idx = pd.date_range("2024-01-02", periods=1, freq="B")
+        df = pd.DataFrame(
+            {"Open": [100.0], "High": [102.0], "Low": [98.0],
+             "Close": [100.0], "Volume": [1_000_000.0]},
+            index=idx,
+        )
+        mock_hist.return_value = df
+        fp = get_footprint("SPY")
+
+        bar = fp.bars[0]
+        # 50/50 split → ratio should be exactly 1.0
+        assert abs(bar.ask_volume / bar.bid_volume - 1.0) < 0.01
+
+    def test_estimate_bid_ask_volume_conservation(self):
+        from hedge_terminal.modules.footprint import _estimate_bid_ask
+
+        bid, ask = _estimate_bid_ask(100.0, 110.0, 95.0, 108.0, 500_000.0)
+        assert abs(bid + ask - 500_000.0) < 0.01
+
+    def test_estimate_bid_ask_zero_range(self):
+        from hedge_terminal.modules.footprint import _estimate_bid_ask
+
+        bid, ask = _estimate_bid_ask(100.0, 100.0, 100.0, 100.0, 200_000.0)
+        assert bid == 100_000.0
+        assert ask == 100_000.0
+
+    def test_imbalance_signal_buy(self):
+        from hedge_terminal.modules.footprint import _imbalance_signal
+
+        result = _imbalance_signal(100.0, 500.0, threshold=3.0)
+        assert "BUY" in result
+
+    def test_imbalance_signal_sell(self):
+        from hedge_terminal.modules.footprint import _imbalance_signal
+
+        result = _imbalance_signal(500.0, 100.0, threshold=3.0)
+        assert "SELL" in result
+
+    def test_imbalance_signal_neutral(self):
+        from hedge_terminal.modules.footprint import _imbalance_signal
+
+        result = _imbalance_signal(300.0, 320.0, threshold=3.0)
+        assert result == "—"
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_delta_is_ask_minus_bid(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df(5)
+        fp = get_footprint("AAPL")
+
+        for bar in fp.bars:
+            assert abs(bar.delta - (bar.ask_volume - bar.bid_volume)) < 0.01
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_total_delta_equals_sum_of_bar_deltas(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df(10)
+        fp = get_footprint("AAPL")
+
+        assert abs(fp.total_delta - sum(b.delta for b in fp.bars)) < 0.01
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_render_returns_non_empty_string(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df(10)
+        fp = get_footprint("AAPL")
+        rendered = fp.render(last_n=10)
+
+        assert isinstance(rendered, str)
+        assert len(rendered) > 50
+        assert "AAPL" in rendered
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_render_empty_returns_no_data(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = pd.DataFrame()
+        fp = get_footprint("SPY")
+
+        assert fp.render() == "(no data)"
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_to_dict_has_required_keys(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df(3)
+        fp = get_footprint("AAPL")
+        rows = fp.to_table_rows(last_n=3)
+
+        assert len(rows) == 3
+        for key in ("Date", "Bid Vol", "Ask Vol", "Cum. Δ"):
+            assert key in rows[0], f"Missing key: {key}"
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_summary_has_required_keys(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        mock_hist.return_value = self._make_ohlcv_df(10)
+        fp = get_footprint("AAPL")
+        s = fp.summary()
+
+        for key in ("Ticker", "Period", "Total Bars", "Total Delta", "Direction"):
+            assert key in s, f"Missing key: {key}"
+
+    @patch("hedge_terminal.modules.footprint.get_price_history")
+    def test_bull_bear_bar_counts(self, mock_hist):
+        from hedge_terminal.modules.footprint import get_footprint
+
+        # 10 bars alternating bullish/bearish
+        mock_hist.return_value = self._make_ohlcv_df(10)
+        fp = get_footprint("AAPL")
+
+        assert fp.bullish_bars + fp.bearish_bars == len(fp.bars)

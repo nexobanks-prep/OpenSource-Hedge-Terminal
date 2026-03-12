@@ -17,6 +17,8 @@ Equivalent Bloomberg / OpenBB commands
   sentiment    ← Bloomberg SRCH/NEWS  | OpenBB stocks ba
   macro        ← Bloomberg ECOW/WECO  | OpenBB economy
   squeeze      ← Bloomberg SI/FSHO   | OpenBB stocks sia
+  heatmap      ← Bloomberg VWAP/Vol   | Sierra Chart Volume by Price
+  footprint    ← Bookmap/NinjaTrader  | Sierra Chart Footprint bars
 
 Usage
 -----
@@ -32,6 +34,8 @@ Usage
     python main.py sentiment
     python main.py macro
     python main.py squeeze
+    python main.py heatmap --ticker SPY
+    python main.py footprint --ticker AAPL
 """
 
 from __future__ import annotations
@@ -619,6 +623,200 @@ def screen(
     rows = [r.to_dict() for r in results]
     table = make_table(f"Screen Results: {preset.title()} (Top {len(rows)})", rows)
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Volume Heatmap command
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option(
+    "--ticker",
+    default="SPY",
+    show_default=True,
+    help="Ticker symbol to analyse.",
+)
+@click.option(
+    "--period",
+    default="3mo",
+    show_default=True,
+    type=click.Choice(["1mo", "3mo", "6mo", "ytd", "1y"]),
+    help="Historical period.",
+)
+@click.option(
+    "--interval",
+    default="1d",
+    show_default=True,
+    type=click.Choice(["1d", "1wk"]),
+    help="Bar interval.",
+)
+@click.option(
+    "--bins",
+    default=30,
+    show_default=True,
+    help="Number of price buckets on the Y-axis (10–60).",
+)
+@click.option(
+    "--compare",
+    default=None,
+    help="Comma-separated extra tickers for a side-by-side summary table.",
+)
+def heatmap(ticker: str, period: str, interval: str, bins: int, compare: str | None) -> None:
+    """
+    Volume heatmap: price × time matrix coloured by traded volume.
+
+    \b
+    Brighter / denser cells = more volume at that price level.
+    Key volume profile levels are annotated on the right edge:
+      POC = Point of Control (highest-volume price)
+      VAH = Value Area High  (upper bound of 70% volume zone)
+      VAL = Value Area Low   (lower bound of 70% volume zone)
+    \b
+    Bloomberg equivalent : GP volume overlay / VWAP band view
+    Sierra Chart         : Volume by Price / TPO Profile
+    Bookmap              : Heatmap layer
+    \b
+    Examples:
+      python main.py heatmap --ticker SPY
+      python main.py heatmap --ticker AAPL --period 6mo
+      python main.py heatmap --ticker NVDA --period 1mo --bins 20
+      python main.py heatmap --ticker SPY --compare QQQ,IWM,DIA
+    """
+    from hedge_terminal.modules.heatmap import get_volume_heatmap
+
+    bins = max(10, min(bins, 60))  # clamp to sensible range
+
+    console.print(
+        Panel(
+            f"[bold]Volume Heatmap:[/bold] [cyan]{ticker.upper()}[/cyan]  "
+            f"[dim]Period: {period}  Interval: {interval}  Bins: {bins}[/dim]",
+            style="blue",
+        )
+    )
+
+    with console.status("[bold green]Building volume heatmap..."):
+        hm = get_volume_heatmap(ticker, period=period, interval=interval, price_bins=bins)
+
+    console.print(hm.render())
+
+    if compare:
+        extra = [t.strip().upper() for t in compare.split(",")]
+        all_tickers = [ticker.upper()] + extra
+        console.print(
+            Panel(
+                f"[bold]Comparing:[/bold] [cyan]{', '.join(all_tickers)}[/cyan]",
+                style="blue",
+            )
+        )
+        rows = [hm.summary()]
+        with console.status("[bold green]Fetching comparison data..."):
+            for t in extra:
+                try:
+                    hm_t = get_volume_heatmap(t, period=period, interval=interval, price_bins=bins)
+                    rows.append(hm_t.summary())
+                except Exception:  # noqa: BLE001
+                    pass
+        table = make_table("Volume Profile Comparison", rows)
+        console.print(table)
+    else:
+        # Always show the summary table for the primary ticker
+        table = make_table(f"Volume Profile: {ticker.upper()}", [hm.summary()])
+        console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Footprint Chart command
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option(
+    "--ticker",
+    default="SPY",
+    show_default=True,
+    help="Ticker symbol to analyse.",
+)
+@click.option(
+    "--period",
+    default="1mo",
+    show_default=True,
+    type=click.Choice(["5d", "1mo", "3mo", "6mo", "ytd", "1y"]),
+    help="Historical period.",
+)
+@click.option(
+    "--interval",
+    default="1d",
+    show_default=True,
+    type=click.Choice(["1d", "1wk"]),
+    help="Bar interval.",
+)
+@click.option(
+    "--last",
+    default=20,
+    show_default=True,
+    help="Number of most-recent bars to display in the delta chart.",
+)
+@click.option(
+    "--table",
+    "show_table",
+    is_flag=True,
+    default=False,
+    help="Also print a detailed bid/ask/delta table for each bar.",
+)
+def footprint(ticker: str, period: str, interval: str, last: int, show_table: bool) -> None:
+    """
+    Footprint chart: estimated bid vs. ask volume and delta per bar.
+
+    \b
+    Delta = Ask Volume − Bid Volume
+      Positive delta → net buying pressure (ask side dominant)
+      Negative delta → net selling pressure (bid side dominant)
+    Bid/ask volumes are estimated from OHLCV using the candle
+    body-to-range ratio method (approximation, not real tick data).
+    \b
+    Bloomberg equivalent : Order-flow analytics (premium add-on)
+    Bookmap              : Footprint / delta layer
+    Sierra Chart         : Bid/Ask footprint bars
+    NinjaTrader          : Volumetric bars
+    \b
+    Examples:
+      python main.py footprint --ticker SPY
+      python main.py footprint --ticker AAPL --period 3mo --last 30
+      python main.py footprint --ticker NVDA --interval 1wk --table
+      python main.py footprint --ticker SPY --period 5d
+    """
+    from hedge_terminal.modules.footprint import get_footprint
+
+    console.print(
+        Panel(
+            f"[bold]Footprint Chart:[/bold] [cyan]{ticker.upper()}[/cyan]  "
+            f"[dim]Period: {period}  Interval: {interval}  Last {last} bars[/dim]",
+            style="blue",
+        )
+    )
+
+    with console.status("[bold green]Calculating bid/ask delta..."):
+        fp = get_footprint(ticker, period=period, interval=interval)
+
+    if not fp.bars:
+        console.print("[yellow]No footprint data returned.[/yellow]")
+        return
+
+    # Delta bar chart (always shown)
+    console.print(fp.render(last_n=last))
+
+    # Summary row
+    table = make_table(f"Footprint Summary: {ticker.upper()}", [fp.summary()])
+    console.print(table)
+
+    # Optional detailed bar table
+    if show_table:
+        rows = fp.to_table_rows(last_n=last)
+        detail_table = make_table(
+            f"Bid/Ask Detail (last {min(last, len(fp.bars))} bars)", rows
+        )
+        console.print(detail_table)
 
 
 if __name__ == "__main__":

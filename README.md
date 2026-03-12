@@ -25,6 +25,8 @@
 | **Cross-Asset Correlations** (`CORR`) | ✅ | ✅ | ✅ `correlations` |
 | **Sentiment vs. Fundamentals** | ✅ (premium) | ✅ | ✅ `sentiment` |
 | **Short Squeeze Finder** (`SI` / `sia`) | ✅ | ✅ | ✅ `squeeze` |
+| **Volume Heatmap** (Volume Profile) | ✅ (premium) | ✅ | ✅ `heatmap` |
+| **Footprint Chart** (Order Flow Delta) | ✅ (premium) | ❌ | ✅ `footprint` |
 | **Runs offline / no API key required** | ❌ | partial | ✅ |
 
 ---
@@ -46,6 +48,8 @@
 | `sentiment` | SRCH / NEWS (premium) | `stocks ba` | yfinance, Yahoo Finance news |
 | `macro` | ECOW / WECO | `economy` | FRED (St. Louis Fed), yfinance |
 | `squeeze` | SI / FSHO | `stocks sia` | yfinance, Finviz, SEC EDGAR |
+| `heatmap` | GP volume overlay / VWAP bands | Sierra Chart Vol-by-Price | yfinance |
+| `footprint` | Order-flow analytics (premium) | custom | yfinance OHLCV (approx.) |
 
 ---
 
@@ -269,6 +273,63 @@ python main.py squeeze --limit 3
 
 ---
 
+### 12. Volume Heatmap  *(Bloomberg GP volume overlay / Sierra Chart Volume by Price)*
+
+Visualise where the most trading volume has accumulated at each price level — revealing key support/resistance zones and areas of high liquidity.  The terminal renders a **price × time** intensity matrix where brighter cells = more traded volume.
+
+```bash
+# Default: SPY, last 3 months, daily bars, 30 price bins
+python main.py heatmap
+
+# Custom ticker and period
+python main.py heatmap --ticker AAPL
+python main.py heatmap --ticker NVDA --period 6mo
+
+# Finer price resolution
+python main.py heatmap --ticker SPY --bins 40
+
+# Side-by-side summary for multiple tickers
+python main.py heatmap --ticker SPY --compare QQQ,IWM,DIA
+```
+
+**Output includes:**
+- ASCII intensity grid (Unicode shade characters `░ ▒ ▓ █` coloured cool → hot)
+- **Point of Control (POC)** — price level with the highest cumulative volume
+- **Value Area High (VAH)** — upper bound of the 70 % value zone
+- **Value Area Low (VAL)** — lower bound of the 70 % value zone
+- Price vs. POC: how far current price is from the highest-volume level
+
+---
+
+### 13. Footprint Chart  *(Bookmap / Sierra Chart / NinjaTrader Volumetric Bars)*
+
+Shows the estimated **bid (sell) vs. ask (buy) volume** for each bar, along with the **delta** (Ask − Bid).  Positive delta signals net buying pressure; negative signals distribution.
+
+Since yfinance provides OHLCV data only (not tick data), bid/ask volumes are approximated using the **candle body-to-range ratio method** — a widely-used technique when tick data is unavailable.
+
+```bash
+# Default: SPY, last 1 month, daily bars, last 20 bars shown
+python main.py footprint
+
+# Custom ticker and period
+python main.py footprint --ticker AAPL
+python main.py footprint --ticker NVDA --period 3mo --last 30
+
+# Weekly bars
+python main.py footprint --ticker SPY --interval 1wk
+
+# Full bid/ask detail table in addition to the delta chart
+python main.py footprint --ticker AAPL --table
+```
+
+**Output includes:**
+- Delta bar chart for the last N bars (green = net buying, red = net selling)
+- Cumulative delta trend
+- Imbalance signals when one side dominates by 3× or more (e.g. `⚡ BUY 4.2×`)
+- Optional detailed table: Date | Dir | Open | High | Low | Close | Volume | Bid Vol | Ask Vol | Delta | Delta % | Cum. Δ
+
+---
+
 ## Free Data Sources
 
 All data is sourced from **free, public APIs**:
@@ -293,7 +354,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-All 67 tests run offline (network calls are mocked).
+All 97 tests run offline (network calls are mocked).
 
 ---
 
