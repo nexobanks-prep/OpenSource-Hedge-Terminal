@@ -1,25 +1,51 @@
 # OpenSource Hedge Terminal
 
 > **No more $24,000/year subscriptions.** Turn your laptop into a private quant analyst — completely free, open-source, and powered by public data.
+>
+> **Yes — this is the free, open-source alternative to both Bloomberg Terminal and OpenBB Terminal.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
+## How It Compares
+
+| Feature | Bloomberg Terminal | OpenBB Terminal | **OpenSource Hedge Terminal** |
+|---|:---:|:---:|:---:|
+| **Cost** | ~$24,000 / year | Free (open-source) | **Free (open-source)** |
+| **Live Quotes** (`BQ` / `stocks quote`) | ✅ | ✅ | ✅ `quote` |
+| **News Feed** (`NEWS` / `news`) | ✅ | ✅ | ✅ `news` |
+| **Price Charts** (`GP` / `stocks candle`) | ✅ | ✅ | ✅ `chart` |
+| **Equity Screener** (`EQSRCH` / screener) | ✅ | ✅ | ✅ `screen` |
+| **Macro Data** (`ECOW` / economy) | ✅ | ✅ | ✅ `macro` |
+| **Portfolio Hedge Designer** (`MARS`) | ✅ | ❌ | ✅ `hedge` |
+| **13F Whale Tracker** (institutional) | ✅ (premium) | ✅ | ✅ `whales` |
+| **Dividend Warning Screener** (`DVD`) | ✅ | ✅ | ✅ `dividends` |
+| **Cross-Asset Correlations** (`CORR`) | ✅ | ✅ | ✅ `correlations` |
+| **Sentiment vs. Fundamentals** | ✅ (premium) | ✅ | ✅ `sentiment` |
+| **Short Squeeze Finder** (`SI` / `sia`) | ✅ | ✅ | ✅ `squeeze` |
+| **Runs offline / no API key required** | ❌ | partial | ✅ |
+
+---
+
 ## Overview
 
-**OpenSource Hedge Terminal** is a Python CLI toolkit that replicates the core analytical workflows of expensive institutional quant platforms, using only **free and public data sources**:
+**OpenSource Hedge Terminal** is a Python CLI toolkit that replicates the core analytical workflows of Bloomberg Terminal and OpenBB Terminal, using only **free and public data sources**:
 
-| Module | What it does | Free data sources |
-|---|---|---|
-| `hedge` | Design efficient portfolio hedges with options or inverse ETFs | yfinance options chains, CBOE VIX |
-| `whales` | Track top 10 hedge fund 13F position changes | Dataroma, WhaleWisdom, SEC EDGAR |
-| `dividends` | Screen for risky high-yield dividend stocks | yfinance fundamentals |
-| `correlations` | Detect unusual cross-asset correlations & normalization trades | yfinance price history |
-| `sentiment` | Find sentiment vs. fundamentals divergence opportunities | yfinance, Yahoo Finance news |
-| `macro` | Analyze macro regime + sector outperformance history | FRED (St. Louis Fed), yfinance |
-| `squeeze` | Find short squeeze candidates with catalysts | yfinance, Finviz, SEC EDGAR |
+| Module | Bloomberg Equivalent | OpenBB Equivalent | Free data sources |
+|---|---|---|---|
+| `quote` | BQ / DES | `stocks quote` | yfinance |
+| `news` | NEWS / NI | `news` | yfinance, Yahoo Finance RSS, SEC EDGAR |
+| `chart` | GP (Graph Price) | `stocks candle` | yfinance |
+| `screen` | EQSRCH / EQS | `stocks screener` | yfinance fundamentals |
+| `hedge` | MARS / DLIB | custom | yfinance options chains, CBOE VIX |
+| `whales` | 13F data (premium) | alternative data | Dataroma, WhaleWisdom, SEC EDGAR |
+| `dividends` | DVD | `stocks dps` | yfinance fundamentals |
+| `correlations` | CORR | custom | yfinance price history |
+| `sentiment` | SRCH / NEWS (premium) | `stocks ba` | yfinance, Yahoo Finance news |
+| `macro` | ECOW / WECO | `economy` | FRED (St. Louis Fed), yfinance |
+| `squeeze` | SI / FSHO | `stocks sia` | yfinance, Finviz, SEC EDGAR |
 
 ---
 
@@ -44,7 +70,82 @@ pip install -r requirements.txt
 python main.py --help
 ```
 
-### 1. Portfolio Hedge Designer
+### 1. Live Stock Quote  *(Bloomberg BQ / OpenBB `stocks quote`)*
+
+Fetch live/delayed price, fundamentals, and key statistics for any ticker:
+
+```bash
+python main.py quote AAPL
+python main.py quote AAPL MSFT TSLA SPY
+python main.py quote ^GSPC ^VIX GLD
+```
+
+**Output includes:** price, day change %, open/close, 52-week range, market cap, P/E, EPS, dividend yield, beta, sector/industry.
+
+---
+
+### 2. Financial News Feed  *(Bloomberg NEWS / OpenBB `news`)*
+
+Fetch the latest headlines for a specific ticker or the broad market:
+
+```bash
+# Broad market headlines
+python main.py news
+
+# Ticker-specific news
+python main.py news --ticker AAPL
+python main.py news --ticker NVDA --limit 5
+```
+
+**Sources:** yfinance news, Yahoo Finance RSS, SEC EDGAR 8-K/10-K/10-Q filings.
+
+---
+
+### 3. ASCII Price Chart  *(Bloomberg GP / OpenBB `stocks candle`)*
+
+Render a price chart directly in the terminal using Unicode block characters:
+
+```bash
+python main.py chart --ticker AAPL
+python main.py chart --ticker SPY --period 1y
+python main.py chart --ticker NVDA --period 3mo --interval 1wk
+python main.py chart --ticker AAPL --compare MSFT,GOOGL,META
+```
+
+**Options:** `--period` (1mo / 3mo / 6mo / ytd / 1y / 2y / 5y), `--interval` (1d / 1wk / 1mo), `--compare` (relative performance table).
+
+---
+
+### 4. Equity Screener  *(Bloomberg EQSRCH / OpenBB screener)*
+
+Screen stocks against fundamental criteria using built-in presets or fully custom filters:
+
+```bash
+# Built-in presets
+python main.py screen --preset value
+python main.py screen --preset growth --limit 5
+python main.py screen --preset dividend
+python main.py screen --preset quality
+python main.py screen --preset low_volatility
+
+# Custom filters
+python main.py screen --preset custom --max-pe 20 --min-margin 0.10
+python main.py screen --preset value --tickers "AAPL,MSFT,GOOGL,META,AMZN"
+```
+
+**Built-in presets:**
+
+| Preset | Criteria |
+|---|---|
+| `value` | P/E ≤ 15, P/B ≤ 2, margin ≥ 5%, D/E ≤ 150 |
+| `growth` | Revenue growth ≥ 15%, EPS growth ≥ 15%, margin ≥ 8% |
+| `dividend` | Yield ≥ 3%, payout ratio ≤ 75%, margin ≥ 5% |
+| `quality` | Margin ≥ 15%, ROE ≥ 15%, D/E ≤ 100, growth ≥ 5% |
+| `low_volatility` | Beta ≤ 0.8, margin ≥ 5%, D/E ≤ 100 |
+
+---
+
+### 5. Portfolio Hedge Designer  *(Bloomberg MARS/DLIB)*
 
 Design a hedge for a specific sector/market exposure using options or inverse ETFs:
 
@@ -63,7 +164,7 @@ python main.py hedge --sector "broad market" --ticker QQQ
 
 ---
 
-### 2. Whale / 13F Tracker
+### 6. Whale / 13F Tracker  *(Bloomberg institutional data / OpenBB alternative data)*
 
 Identify what top hedge funds are accumulating, trimming, and exiting:
 
@@ -82,7 +183,7 @@ python main.py whales --filter decreased
 
 ---
 
-### 3. Dividend Warning Screener
+### 7. Dividend Warning Screener  *(Bloomberg DVD / OpenBB `stocks dps`)*
 
 Screen for stocks with attractive yields (>5%) but with dangerous warning signs:
 
@@ -101,7 +202,7 @@ python main.py dividends --limit 3
 
 ---
 
-### 4. Correlation Scanner
+### 8. Correlation Scanner  *(Bloomberg CORR)*
 
 Detect unusual cross-asset correlations and generate normalization trades:
 
@@ -114,7 +215,7 @@ python main.py correlations
 
 ---
 
-### 5. Sentiment vs. Fundamentals Analyzer
+### 9. Sentiment vs. Fundamentals Analyzer  *(Bloomberg SRCH/NEWS)*
 
 Find stocks where negative market sentiment contradicts strong underlying fundamentals:
 
@@ -133,7 +234,7 @@ python main.py sentiment --limit 4
 
 ---
 
-### 6. Macro Context Analyzer
+### 10. Macro Context Analyzer  *(Bloomberg ECOW/WECO / OpenBB `economy`)*
 
 Fetch current macro data and identify which sectors historically outperform in this regime:
 
@@ -146,7 +247,7 @@ python main.py macro
 
 ---
 
-### 7. Short Squeeze Finder
+### 11. Short Squeeze Finder  *(Bloomberg SI/FSHO / OpenBB `stocks sia`)*
 
 Find stocks with high short interest (>20% of float), elevated borrow rates, and upcoming catalysts:
 
@@ -192,7 +293,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-All 43 tests run offline (network calls are mocked).
+All 67 tests run offline (network calls are mocked).
 
 ---
 

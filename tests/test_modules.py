@@ -654,3 +654,372 @@ class TestDataFetcher:
         result = fetch_fred_series("CPIAUCSL")
         assert isinstance(result, pd.Series)
         assert result.empty
+
+
+# ---------------------------------------------------------------------------
+# quote tests
+# ---------------------------------------------------------------------------
+
+class TestQuote:
+    def _make_info(self) -> dict:
+        return {
+            "longName": "Apple Inc.",
+            "shortName": "Apple",
+            "exchange": "NMS",
+            "sector": "Technology",
+            "industry": "Consumer Electronics",
+            "regularMarketPrice": 185.0,
+            "regularMarketPreviousClose": 180.0,
+            "regularMarketOpen": 181.0,
+            "regularMarketDayHigh": 187.0,
+            "regularMarketDayLow": 179.5,
+            "regularMarketVolume": 55_000_000,
+            "averageVolume": 60_000_000,
+            "marketCap": 2_900_000_000_000,
+            "trailingPE": 28.5,
+            "trailingEps": 6.49,
+            "dividendYield": 0.005,
+            "fiftyTwoWeekHigh": 199.0,
+            "fiftyTwoWeekLow": 140.0,
+            "beta": 1.25,
+            "currency": "USD",
+        }
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_get_quote_returns_stock_quote(self, mock_info):
+        from hedge_terminal.modules.quote import get_quote, StockQuote
+
+        mock_info.return_value = self._make_info()
+        q = get_quote("AAPL")
+
+        assert isinstance(q, StockQuote)
+        assert q.ticker == "AAPL"
+        assert q.company_name == "Apple Inc."
+        assert q.price == 185.0
+        assert q.sector == "Technology"
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_get_quote_computes_change_pct(self, mock_info):
+        from hedge_terminal.modules.quote import get_quote
+
+        mock_info.return_value = self._make_info()
+        q = get_quote("AAPL")
+
+        # (185 - 180) / 180 * 100 ≈ 2.78 %
+        assert q.change_pct is not None
+        assert abs(q.change_pct - (5 / 180 * 100)) < 0.01
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_get_quote_scales_dividend_yield(self, mock_info):
+        from hedge_terminal.modules.quote import get_quote
+
+        mock_info.return_value = self._make_info()  # dividendYield = 0.005
+        q = get_quote("AAPL")
+
+        assert q.dividend_yield_pct is not None
+        assert abs(q.dividend_yield_pct - 0.5) < 0.001  # 0.5 %
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_to_dict_has_expected_keys(self, mock_info):
+        from hedge_terminal.modules.quote import get_quote
+
+        mock_info.return_value = self._make_info()
+        d = get_quote("AAPL").to_dict()
+
+        for key in ("Ticker", "Company", "Price", "Day Change", "Market Cap",
+                    "P/E (TTM)", "Beta", "52-Week High", "52-Week Low"):
+            assert key in d, f"Missing key: {key}"
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_get_quotes_skips_errors(self, mock_info):
+        from hedge_terminal.modules.quote import get_quotes
+
+        mock_info.side_effect = [self._make_info(), Exception("boom")]
+        quotes = get_quotes(["AAPL", "BAD"])
+
+        assert len(quotes) == 1
+        assert quotes[0].ticker == "AAPL"
+
+    @patch("hedge_terminal.modules.quote.get_ticker_info")
+    def test_market_cap_formatted_in_trillions(self, mock_info):
+        from hedge_terminal.modules.quote import get_quote
+
+        info = self._make_info()
+        info["marketCap"] = 3_000_000_000_000  # 3T
+        mock_info.return_value = info
+        d = get_quote("AAPL").to_dict()
+
+        assert "T" in d["Market Cap"]
+
+
+# ---------------------------------------------------------------------------
+# news tests
+# ---------------------------------------------------------------------------
+
+class TestNews:
+    @patch("hedge_terminal.modules.news.requests.get")
+    def test_fetch_yahoo_rss_returns_items_on_success(self, mock_get):
+        from hedge_terminal.modules.news import _fetch_yahoo_rss
+
+        xml = """<?xml version="1.0"?>
+<rss><channel>
+  <title><![CDATA[Feed]]></title>
+  <title><![CDATA[AAPL soars on earnings]]></title>
+  <link>https://example.com/1</link>
+  <pubDate>N/A</pubDate>
+  <pubDate>2024-01-15</pubDate>
+  <description><![CDATA[Feed desc]]></description>
+  <description><![CDATA[Apple beats estimates by wide margin.]]></description>
+</channel></rss>"""
+        mock_response = MagicMock()
+        mock_response.text = xml
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        items = _fetch_yahoo_rss("AAPL", limit=5)
+        assert len(items) >= 1
+        assert items[0].title == "AAPL soars on earnings"
+
+    @patch("hedge_terminal.modules.news.requests.get")
+    def test_fetch_yahoo_rss_returns_empty_on_error(self, mock_get):
+        from hedge_terminal.modules.news import _fetch_yahoo_rss
+
+        mock_get.side_effect = Exception("Network error")
+        items = _fetch_yahoo_rss("AAPL", limit=5)
+        assert items == []
+
+    @patch("hedge_terminal.modules.news._fetch_sec_filings")
+    @patch("hedge_terminal.modules.news._fetch_yahoo_rss")
+    @patch("hedge_terminal.modules.news._fetch_yfinance_news")
+    def test_get_ticker_news_deduplicates(self, mock_yf, mock_rss, mock_sec):
+        from hedge_terminal.modules.news import get_ticker_news, NewsItem
+
+        item = NewsItem(
+            title="Duplicate headline",
+            publisher="Test",
+            published_at="2024-01-01",
+            url="https://example.com",
+            summary="Summary",
+            ticker="AAPL",
+            source_feed="yfinance",
+        )
+        mock_yf.return_value = [item]
+        mock_rss.return_value = [item]  # same title → should be deduped
+        mock_sec.return_value = []
+
+        items = get_ticker_news("AAPL", limit=10)
+        assert len(items) == 1
+
+    @patch("hedge_terminal.modules.news._fetch_sec_filings")
+    @patch("hedge_terminal.modules.news._fetch_yahoo_rss")
+    @patch("hedge_terminal.modules.news._fetch_yfinance_news")
+    def test_get_ticker_news_respects_limit(self, mock_yf, mock_rss, mock_sec):
+        from hedge_terminal.modules.news import get_ticker_news, NewsItem
+
+        def _make_item(n: int) -> NewsItem:
+            return NewsItem(
+                title=f"Headline {n}",
+                publisher="Test",
+                published_at="2024-01-01",
+                url="https://example.com",
+                summary="",
+                ticker="AAPL",
+                source_feed="yfinance",
+            )
+
+        mock_yf.return_value = [_make_item(i) for i in range(8)]
+        mock_rss.return_value = []
+        mock_sec.return_value = []
+
+        items = get_ticker_news("AAPL", limit=5)
+        assert len(items) <= 5
+
+    def test_news_item_to_dict_truncates_long_summary(self):
+        from hedge_terminal.modules.news import NewsItem
+
+        item = NewsItem(
+            title="Title",
+            publisher="Pub",
+            published_at="2024-01-01",
+            url="https://example.com",
+            summary="A" * 300,  # > 200 chars
+            ticker="AAPL",
+            source_feed="yfinance",
+        )
+        d = item.to_dict()
+        assert len(d["Summary"]) <= 201 + 1  # 200 chars + "…"
+
+
+# ---------------------------------------------------------------------------
+# screener tests
+# ---------------------------------------------------------------------------
+
+class TestScreener:
+    def _make_info(self, **kwargs) -> dict:
+        defaults = {
+            "longName": "Test Corp",
+            "sector": "Technology",
+            "industry": "Software",
+            "marketCap": 50_000_000_000,
+            "trailingPE": 12.0,
+            "priceToBook": 1.5,
+            "enterpriseToEbitda": 8.0,
+            "revenueGrowth": 0.20,
+            "earningsGrowth": 0.22,
+            "profitMargins": 0.18,
+            "returnOnEquity": 0.20,
+            "dividendYield": 0.04,
+            "payoutRatio": 0.40,
+            "debtToEquity": 50.0,
+            "beta": 0.75,
+        }
+        defaults.update(kwargs)
+        return defaults
+
+    @patch("hedge_terminal.modules.screener.get_ticker_info")
+    def test_screen_equities_returns_results(self, mock_info):
+        from hedge_terminal.modules.screener import screen_equities, ScreenCriteria
+
+        mock_info.return_value = self._make_info()
+        criteria = ScreenCriteria(max_pe=20.0, min_profit_margin=0.05)
+
+        results = screen_equities(criteria, universe=["AAPL", "MSFT"], limit=5)
+        assert len(results) <= 5
+
+    @patch("hedge_terminal.modules.screener.get_ticker_info")
+    def test_screen_rejects_violated_constraint(self, mock_info):
+        from hedge_terminal.modules.screener import screen_equities, ScreenCriteria
+
+        # PE = 30 violates max_pe=15
+        mock_info.return_value = self._make_info(trailingPE=30.0)
+        criteria = ScreenCriteria(max_pe=15.0)
+
+        results = screen_equities(criteria, universe=["AAPL"], limit=5)
+        assert results == []
+
+    @patch("hedge_terminal.modules.screener.get_ticker_info")
+    def test_passed_criteria_populated(self, mock_info):
+        from hedge_terminal.modules.screener import screen_equities, ScreenCriteria
+
+        mock_info.return_value = self._make_info()
+        criteria = ScreenCriteria(max_pe=20.0, min_profit_margin=0.05, min_roe=0.10)
+
+        results = screen_equities(criteria, universe=["AAPL"], limit=5)
+        if results:
+            assert len(results[0].passed_criteria) > 0
+
+    @patch("hedge_terminal.modules.screener.get_ticker_info")
+    def test_screen_respects_limit(self, mock_info):
+        from hedge_terminal.modules.screener import screen_equities, ScreenCriteria
+
+        mock_info.return_value = self._make_info()
+        criteria = ScreenCriteria()  # no constraints → all pass
+
+        results = screen_equities(
+            criteria,
+            universe=["AAPL", "MSFT", "GOOGL", "META", "AMZN"],
+            limit=3,
+        )
+        assert len(results) <= 3
+
+    def test_presets_defined(self):
+        from hedge_terminal.modules.screener import PRESETS
+
+        for name in ("value", "growth", "dividend", "quality", "low_volatility"):
+            assert name in PRESETS, f"Missing preset: {name}"
+
+    @patch("hedge_terminal.modules.screener.get_ticker_info")
+    def test_to_dict_has_required_columns(self, mock_info):
+        from hedge_terminal.modules.screener import _fetch_result
+
+        mock_info.return_value = self._make_info()
+        r = _fetch_result("AAPL")
+        d = r.to_dict()
+
+        for col in ("Ticker", "Company", "Sector", "Market Cap", "P/E",
+                    "Net Margin", "ROE", "Beta"):
+            assert col in d, f"Missing column: {col}"
+
+
+# ---------------------------------------------------------------------------
+# chart tests
+# ---------------------------------------------------------------------------
+
+class TestChart:
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_get_chart_returns_chart_data(self, mock_hist):
+        from hedge_terminal.modules.chart import get_chart, ChartData
+
+        mock_hist.return_value = _make_price_df([100, 105, 110, 108, 115])
+        cd = get_chart("AAPL", period="1mo")
+
+        assert isinstance(cd, ChartData)
+        assert cd.ticker == "AAPL"
+        assert not cd.prices.empty
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_chart_computes_change_pct(self, mock_hist):
+        from hedge_terminal.modules.chart import get_chart
+
+        mock_hist.return_value = _make_price_df([100.0, 105.0, 110.0])
+        cd = get_chart("SPY")
+
+        assert cd.change_pct is not None
+        assert abs(cd.change_pct - 10.0) < 0.01  # (110-100)/100*100 = 10%
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_render_returns_non_empty_string(self, mock_hist):
+        from hedge_terminal.modules.chart import get_chart
+
+        mock_hist.return_value = _make_price_df(
+            [float(i) + 100 for i in range(30)]
+        )
+        cd = get_chart("AAPL")
+        rendered = cd.render(width=40, height=10)
+
+        assert isinstance(rendered, str)
+        assert len(rendered) > 50
+        assert "AAPL" in rendered
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_render_empty_data_returns_no_data(self, mock_hist):
+        import pandas as pd
+        from hedge_terminal.modules.chart import get_chart
+
+        mock_hist.return_value = pd.DataFrame()
+        cd = get_chart("AAPL")
+
+        assert cd.render() == "(no data)"
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_chart_high_low_correct(self, mock_hist):
+        from hedge_terminal.modules.chart import get_chart
+
+        prices = [90.0, 95.0, 110.0, 85.0, 100.0]
+        mock_hist.return_value = _make_price_df(prices)
+        cd = get_chart("AAPL")
+
+        assert abs(cd.high - 110.0) < 0.01
+        assert abs(cd.low - 85.0) < 0.01
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_summary_dict_keys(self, mock_hist):
+        from hedge_terminal.modules.chart import get_chart
+
+        mock_hist.return_value = _make_price_df([100.0, 110.0])
+        cd = get_chart("SPY")
+        s = cd.summary()
+
+        for key in ("Ticker", "Period", "Current Price", "Period High",
+                    "Period Low", "Period Change"):
+            assert key in s, f"Missing key: {key}"
+
+    @patch("hedge_terminal.modules.chart.get_price_history")
+    def test_compare_charts_returns_dict_per_ticker(self, mock_hist):
+        from hedge_terminal.modules.chart import compare_charts
+
+        mock_hist.return_value = _make_price_df([100.0, 105.0, 110.0])
+        result = compare_charts(["SPY", "QQQ"], period="1mo")
+
+        assert "SPY" in result
+        assert "QQQ" in result

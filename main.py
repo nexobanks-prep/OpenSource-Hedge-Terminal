@@ -1,12 +1,30 @@
 """
 OpenSource Hedge Terminal – CLI
 ================================
-A free, open-source quant analyst toolkit for portfolio hedging, macro
-analysis, sentiment divergence, and more — no paid subscriptions required.
+A free, open-source quant analyst toolkit that replicates the core
+workflows of Bloomberg Terminal and OpenBB Terminal — no paid subscriptions.
+
+Equivalent Bloomberg / OpenBB commands
+---------------------------------------
+  quote        ← Bloomberg BQ/DES     | OpenBB stocks quote
+  news         ← Bloomberg NEWS       | OpenBB news
+  chart        ← Bloomberg GP         | OpenBB stocks candle
+  screen       ← Bloomberg EQSRCH    | OpenBB stocks screener
+  hedge        ← Bloomberg MARS/DLIB  | custom quant module
+  whales       ← Bloomberg 13F data   | OpenBB alternative data
+  dividends    ← Bloomberg DVD        | OpenBB stocks dps
+  correlations ← Bloomberg CORR       | custom quant module
+  sentiment    ← Bloomberg SRCH/NEWS  | OpenBB stocks ba
+  macro        ← Bloomberg ECOW/WECO  | OpenBB economy
+  squeeze      ← Bloomberg SI/FSHO   | OpenBB stocks sia
 
 Usage
 -----
     python main.py --help
+    python main.py quote AAPL MSFT TSLA
+    python main.py news --ticker AAPL
+    python main.py chart --ticker SPY --period 1y
+    python main.py screen --preset value
     python main.py hedge --sector technology
     python main.py whales
     python main.py dividends
@@ -37,7 +55,7 @@ BANNER = """
  ██    ██ ██      ██      ██  ██ ██       ██   ██ ██      ██   ██ ██    ██ ██
   ██████  ██      ███████ ██   ████       ██   ██ ███████ ██████   ██████  ███████
 [/bold cyan]
-[bold yellow]  T E R M I N A L[/bold yellow]  [dim]– Free, Open-Source Quant Analyst[/dim]
+[bold yellow]  T E R M I N A L[/bold yellow]  [dim]– Free, Open-Source Alternative to Bloomberg & OpenBB[/dim]
 [dim]  No more $24,000/year subscriptions.[/dim]
 """
 
@@ -82,7 +100,7 @@ def make_table(title: str, rows: list[dict]) -> Table:
 
 @click.group()
 def cli() -> None:
-    """OpenSource Hedge Terminal – your free private quant analyst."""
+    """OpenSource Hedge Terminal – free alternative to Bloomberg & OpenBB."""
     print_banner()
 
 
@@ -332,6 +350,275 @@ def squeeze(tickers: str | None, min_short: float, limit: int) -> None:
     console.print("\n[bold]Sources:[/bold]")
     for s in sources:
         console.print(f"  • {s}")
+
+
+# ---------------------------------------------------------------------------
+# New Bloomberg / OpenBB parity commands
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("tickers", nargs=-1, required=True)
+def quote(tickers: tuple[str, ...]) -> None:
+    """
+    Live stock quote for one or more tickers.
+
+    \b
+    Bloomberg equivalent : BQ / DES
+    OpenBB equivalent    : stocks quote
+    \b
+    Examples:
+      python main.py quote AAPL
+      python main.py quote AAPL MSFT TSLA SPY
+    """
+    from hedge_terminal.modules.quote import get_quotes
+
+    console.print(
+        Panel(
+            "[bold]Fetching live quotes...[/bold]",
+            style="blue",
+        )
+    )
+    with console.status("[bold green]Downloading quote data..."):
+        quotes = get_quotes(list(tickers))
+
+    if not quotes:
+        console.print("[yellow]No quote data returned for the supplied tickers.[/yellow]")
+        return
+
+    for q in quotes:
+        table = make_table(f"Quote: {q.ticker}", [q.to_dict()])
+        console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--ticker",
+    default=None,
+    help="Ticker symbol to fetch news for (omit for broad market headlines).",
+)
+@click.option(
+    "--limit",
+    default=10,
+    show_default=True,
+    help="Maximum number of headlines to return.",
+)
+def news(ticker: str | None, limit: int) -> None:
+    """
+    Latest financial news headlines for a ticker or the broad market.
+
+    \b
+    Bloomberg equivalent : NEWS / NI
+    OpenBB equivalent    : news
+    \b
+    Examples:
+      python main.py news
+      python main.py news --ticker AAPL
+      python main.py news --ticker NVDA --limit 5
+    """
+    from hedge_terminal.modules.news import get_ticker_news, get_market_news
+
+    if ticker:
+        console.print(
+            Panel(
+                f"[bold]Fetching news for:[/bold] [cyan]{ticker.upper()}[/cyan]",
+                style="blue",
+            )
+        )
+        with console.status("[bold green]Fetching headlines..."):
+            items = get_ticker_news(ticker, limit=limit)
+    else:
+        console.print(
+            Panel("[bold]Fetching broad market headlines...[/bold]", style="blue")
+        )
+        with console.status("[bold green]Fetching market news..."):
+            items = get_market_news(limit=limit)
+
+    if not items:
+        console.print("[yellow]No news items found.[/yellow]")
+        return
+
+    rows = [item.to_dict() for item in items]
+    label = ticker.upper() if ticker else "Market"
+    table = make_table(f"News: {label}", rows)
+    console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--ticker",
+    default="SPY",
+    show_default=True,
+    help="Ticker symbol to chart.",
+)
+@click.option(
+    "--period",
+    default="6mo",
+    show_default=True,
+    type=click.Choice(["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y"]),
+    help="Time period for the chart.",
+)
+@click.option(
+    "--interval",
+    default="1d",
+    show_default=True,
+    type=click.Choice(["1d", "1wk", "1mo"]),
+    help="Candlestick interval.",
+)
+@click.option(
+    "--compare",
+    default=None,
+    help="Comma-separated additional tickers to compare (summary table only).",
+)
+def chart(ticker: str, period: str, interval: str, compare: str | None) -> None:
+    """
+    ASCII price chart in the terminal.
+
+    \b
+    Bloomberg equivalent : GP (Graph Price)
+    OpenBB equivalent    : stocks candle
+    \b
+    Examples:
+      python main.py chart --ticker AAPL
+      python main.py chart --ticker SPY --period 1y
+      python main.py chart --ticker NVDA --period 3mo --interval 1wk
+      python main.py chart --ticker AAPL --compare MSFT,GOOGL,META
+    """
+    from hedge_terminal.modules.chart import get_chart, compare_charts
+
+    console.print(
+        Panel(
+            f"[bold]Charting:[/bold] [cyan]{ticker.upper()}[/cyan]  "
+            f"[dim]Period: {period}  Interval: {interval}[/dim]",
+            style="blue",
+        )
+    )
+
+    with console.status("[bold green]Downloading price data..."):
+        cd = get_chart(ticker, period=period, interval=interval)
+
+    # Render ASCII chart
+    console.print(cd.render())
+
+    # Optional comparison table
+    if compare:
+        extra = [t.strip().upper() for t in compare.split(",")]
+        all_tickers = [ticker.upper()] + extra
+        console.print(
+            Panel(
+                f"[bold]Comparing:[/bold] [cyan]{', '.join(all_tickers)}[/cyan]",
+                style="blue",
+            )
+        )
+        with console.status("[bold green]Downloading comparison data..."):
+            charts = compare_charts(all_tickers, period=period, interval=interval)
+
+        rows = [c.summary() for c in charts.values()]
+        table = make_table("Relative Performance Comparison", rows)
+        console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--preset",
+    default="value",
+    show_default=True,
+    type=click.Choice(["value", "growth", "dividend", "quality", "low_volatility", "custom"]),
+    help="Built-in screening preset.",
+)
+@click.option("--max-pe", default=None, type=float, help="Maximum trailing P/E ratio.")
+@click.option("--min-rev-growth", default=None, type=float, help="Minimum revenue growth (e.g. 0.10 for 10%).")
+@click.option("--min-margin", default=None, type=float, help="Minimum net profit margin (e.g. 0.05 for 5%).")
+@click.option("--min-yield", default=None, type=float, help="Minimum dividend yield (e.g. 0.03 for 3%).")
+@click.option("--max-de", default=None, type=float, help="Maximum debt-to-equity ratio.")
+@click.option(
+    "--tickers",
+    default=None,
+    help="Comma-separated custom universe to screen (default: built-in 60-ticker universe).",
+)
+@click.option(
+    "--limit",
+    default=10,
+    show_default=True,
+    help="Maximum number of results to return.",
+)
+def screen(
+    preset: str,
+    max_pe: float | None,
+    min_rev_growth: float | None,
+    min_margin: float | None,
+    min_yield: float | None,
+    max_de: float | None,
+    tickers: str | None,
+    limit: int,
+) -> None:
+    """
+    Screen stocks by fundamental criteria.
+
+    \b
+    Bloomberg equivalent : EQSRCH / EQS
+    OpenBB equivalent    : stocks screener
+    \b
+    Built-in presets: value | growth | dividend | quality | low_volatility
+    \b
+    Examples:
+      python main.py screen --preset value
+      python main.py screen --preset growth --limit 5
+      python main.py screen --preset custom --max-pe 20 --min-margin 0.10
+      python main.py screen --preset value --tickers "AAPL,MSFT,GOOGL,META,AMZN"
+    """
+    from hedge_terminal.modules.screener import (
+        ScreenCriteria,
+        PRESETS,
+        screen_equities,
+    )
+
+    if preset == "custom":
+        criteria = ScreenCriteria(
+            max_pe=max_pe,
+            min_revenue_growth=min_rev_growth,
+            min_profit_margin=min_margin,
+            min_dividend_yield=min_yield,
+            max_debt_to_equity=max_de,
+        )
+    else:
+        criteria = PRESETS[preset]
+        # Allow CLI overrides on top of the preset
+        if max_pe is not None:
+            criteria.max_pe = max_pe
+        if min_rev_growth is not None:
+            criteria.min_revenue_growth = min_rev_growth
+        if min_margin is not None:
+            criteria.min_profit_margin = min_margin
+        if min_yield is not None:
+            criteria.min_dividend_yield = min_yield
+        if max_de is not None:
+            criteria.max_debt_to_equity = max_de
+
+    universe = (
+        [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    )
+
+    console.print(
+        Panel(
+            f"[bold]Equity Screener[/bold] — preset: [cyan]{preset}[/cyan]  "
+            f"limit: {limit}",
+            style="blue",
+        )
+    )
+    with console.status("[bold green]Screening equities..."):
+        results = screen_equities(criteria, universe=universe, limit=limit)
+
+    if not results:
+        console.print(
+            "[yellow]No stocks matched the screening criteria.[/yellow]\n"
+            "[dim]Try relaxing the filters or using a different preset.[/dim]"
+        )
+        return
+
+    rows = [r.to_dict() for r in results]
+    table = make_table(f"Screen Results: {preset.title()} (Top {len(rows)})", rows)
+    console.print(table)
 
 
 if __name__ == "__main__":
